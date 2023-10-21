@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/tls"
 	"fmt"
 	"net/http"
 	"net/http/httputil"
@@ -8,23 +9,27 @@ import (
 	"os"
 )
 
+// The Server interface defines the requirements that servers must implement for load balancer management.
 type Server interface {
 	Address() string
 	IsAlive() bool
 	Serve(rw http.ResponseWriter, r *http.Request)
 }
 
+// simpleServer is an implementation of the Server interface representing an individual server.
 type simpleServer struct {
 	address string
 	proxy   httputil.ReverseProxy
 }
 
+// LoadBalancer represents a load balancer that distributes traffic among multiple servers.
 type LoadBalancer struct {
 	port            string
 	roundRobinCount int
 	servers         []Server
 }
 
+// NewLoadBalancer is a constructor for the LoadBalancer.
 func NewLoadBalancer(port string, servers []Server) *LoadBalancer {
 
 	return &LoadBalancer{
@@ -35,18 +40,38 @@ func NewLoadBalancer(port string, servers []Server) *LoadBalancer {
 
 }
 
-func newSimpleServer(address string) *simpleServer {
+// newSimpleServer is a constructor for simpleServer.
+func newSimpleServer(address string, isHTTPS bool) *simpleServer {
 	serverUrl, err := url.Parse(address)
 
 	handleErr(err)
 
+	proxy := httputil.NewSingleHostReverseProxy(serverUrl)
+
+	if isHTTPS {
+
+		certFile := "///myserver.cert" // Replace with the path to your certificate
+		keyFile := "///myserver.key"   //  Replace with the path to your private key
+
+		cert, err := tls.LoadX509KeyPair(certFile, keyFile)
+		if err != nil {
+			handleErr(err)
+		}
+
+		proxy.Transport = &http.Transport{
+			TLSClientConfig: &tls.Config{
+				Certificates: []tls.Certificate{cert}},
+		}
+	}
+
 	return &simpleServer{
 		address: address,
-		proxy:   *httputil.NewSingleHostReverseProxy(serverUrl),
+		proxy:   *proxy,
 	}
 
 }
 
+// handleErr is an error handling function.
 func handleErr(err error) {
 	if err != nil {
 		fmt.Printf("error: %v\n ", err)
@@ -54,14 +79,22 @@ func handleErr(err error) {
 	}
 }
 
-func (s *simpleServer) Address() string { return s.address }
+// Address returns the server's address.
+func (s *simpleServer) Address() string {
+	return s.address
+}
 
-func (lb *simpleServer) IsAlive() bool { return true }
+// IsAlive checks if the server is active.
+func (lb *simpleServer) IsAlive() bool {
+	return true
+}
 
+// Serve forwards requests through the proxy..
 func (s *simpleServer) Serve(rw http.ResponseWriter, req *http.Request) {
 	s.proxy.ServeHTTP(rw, req)
 }
 
+// getNextAvailableServer returns the next available server using a round-robin approach.
 func (lb *LoadBalancer) getNextAvaileableServer() Server {
 	server := lb.servers[lb.roundRobinCount%len(lb.servers)]
 	for !server.IsAlive() {
@@ -72,6 +105,7 @@ func (lb *LoadBalancer) getNextAvaileableServer() Server {
 	return server
 }
 
+// serveProxy handles client requests and forwards them to the appropriate server.
 func (lb *LoadBalancer) serveProxy(rw http.ResponseWriter, r *http.Request) {
 
 	targetServer := lb.getNextAvaileableServer()
@@ -83,9 +117,9 @@ func (lb *LoadBalancer) serveProxy(rw http.ResponseWriter, r *http.Request) {
 
 func main() {
 	servers := []Server{
-		newSimpleServer("https://www.facebook.com"),
-		newSimpleServer("http://www.bing.com"),
-		newSimpleServer("http://www.duckduckgo.com"),
+		newSimpleServer("https://www.facebook.com", true),
+		newSimpleServer("https://www.bing.com", true),
+		newSimpleServer("https://www.duckduckgo.com", true),
 	}
 
 	lb := NewLoadBalancer("8000", servers)
@@ -98,6 +132,9 @@ func main() {
 
 	fmt.Printf("server request at 'localhost: %s'\n", lb.port)
 
-	http.ListenAndServe(":"+lb.port, nil)
+	certFile := "/myserver.cert" //  Replace with the path to your certificate
+	keyFile := "/myserver.key"   //  Replace with the path to your private key
+
+	http.ListenAndServeTLS(":"+lb.port, certFile, keyFile, nil)
 
 }
